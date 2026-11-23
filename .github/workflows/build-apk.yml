@@ -19,79 +19,20 @@ jobs:
           npm install @capacitor/core@6 @capacitor/cli@6 @capacitor/android@6
           npx cap init "VigíaStock Pro" "com.vigiastock.pro" --web-dir=www
           npx cap add android
-          
-          # Inyectar permisos reales en el AndroidManifest original sin romperlo
-          sed -i 's|<application|<uses-permission android:name="android.permission.VIBRATE" />\n    <uses-permission android:name="android.permission.WAKE_LOCK" />\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\n    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />\n    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />\n    <application android:usesCleartextTraffic="true"|' android/app/src/main/AndroidManifest.xml
-          
-          # Usar Java estándar compatible con Capacitor 6 para el puente de permisos y notificaciones
-          cat << 'EOF' > android/app/src/main/java/com/vigiastock/pro/MainActivity.java
-          package com.vigiastock.pro;
-
-          import android.Manifest;
-          import android.app.NotificationChannel;
-          import android.app.NotificationManager;
-          import android.content.Context;
-          import android.content.Intent;
-          import android.net.Uri;
-          import android.os.Build;
-          import android.os.Bundle;
-          import android.os.PowerManager;
-          import android.provider.Settings;
-          import android.webkit.JavascriptInterface;
-          import androidx.core.app.ActivityCompat;
-          import androidx.core.app.NotificationCompat;
-          import com.getcapacitor.BridgeActivity;
-
-          public class MainActivity extends BridgeActivity {
-              @Override
-              public void onCreate(Bundle savedInstanceState) {
-                  super.onCreate(savedInstanceState);
-                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                      NotificationChannel ch = new NotificationChannel("vigiastock_alerts", "Alertas Críticas", NotificationManager.IMPORTANCE_HIGH);
-                      ch.enableVibration(true);
-                      getSystemService(NotificationManager.class).createNotificationChannel(ch);
-                  }
-                  getBridge().getWebView().addJavascriptInterface(new AndroidBridge(this), "AndroidBridge");
-                  requestAllSystemPermissions();
-              }
-
-              public void requestAllSystemPermissions() {
-                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                      ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.POST_NOTIFICATIONS}, 101);
-                  }
-                  PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
-                  if (pm != null && !pm.isIgnoringBatteryOptimizations(getPackageName())) {
-                      startActivity(new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:" + getPackageName())));
-                  }
-                  if (!Settings.canDrawOverlays(this)) {
-                      startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + getPackageName())));
-                  }
-              }
-
-              public class AndroidBridge {
-                  MainActivity act;
-                  AndroidBridge(MainActivity a) { this.act = a; }
-
-                  @JavascriptInterface
-                  public void requestAllPermissions() {
-                      act.runOnUiThread(() -> act.requestAllSystemPermissions());
-                  }
-
-                  @JavascriptInterface
-                  public void showNotification(String title, String body) {
-                      NotificationCompat.Builder b = new NotificationCompat.Builder(act, "vigiastock_alerts")
-                          .setSmallIcon(android.R.drawable.ic_dialog_alert)
-                          .setContentTitle(title)
-                          .setContentText(body)
-                          .setPriority(NotificationCompat.PRIORITY_MAX)
-                          .setAutoCancel(true);
-                      NotificationManager nm = (NotificationManager) act.getSystemService(Context.NOTIFICATION_SERVICE);
-                      if (nm != null) nm.notify((int) System.currentTimeMillis(), b.build());
-                  }
-              }
-          }
-          EOF
-
+          node -e '
+            const fs = require("fs");
+            const mPath = "android/app/src/main/AndroidManifest.xml";
+            let m = fs.readFileSync(mPath, "utf8");
+            const perms = [
+              "android.permission.VIBRATE",
+              "android.permission.WAKE_LOCK",
+              "android.permission.POST_NOTIFICATIONS",
+              "android.permission.SYSTEM_ALERT_WINDOW",
+              "android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"
+            ].map(p => `<uses-permission android:name="${p}" />`).join("\n    ");
+            m = m.replace("<application", perms + "\n    <application android:usesCleartextTraffic=\"true\"");
+            fs.writeFileSync(mPath, m);
+          '
           npx cap sync android
           cd android && chmod +x gradlew && ./gradlew assembleDebug
       - uses: actions/upload-artifact@v4
