@@ -52,11 +52,11 @@ jobs:
           cat > capacitor.config.json <<'EOF'
           {
             "appId": "com.vigiastock.pro",
-            "appName": "VigiaStock Pro",
-            "webDir": "www",
-            "server": {
-              "url": "https://anthonycarrasco203-lang.github.io/vigiastock-pro/www/",
-              "cleartext": true
+                  "appName": "VigiaStock Pro",
+                "webDir": "www",
+              "server": {
+    "url": "https://anthonycarrasco203-lang.github.io/vigiastock-pro/",
+    "cleartext": true
             }
           }
           EOF
