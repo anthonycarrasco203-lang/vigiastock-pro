@@ -1,5 +1,4 @@
-
-name: Crear APK de Android
+name: VigiaStock Pro - Publicar web y compilar APK
 
 on:
   workflow_dispatch:
@@ -12,15 +11,45 @@ on:
 
 permissions:
   contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: vigia-stock-deployment
+  cancel-in-progress: false
 
 jobs:
   build:
-    name: Compilar VigiaStock Pro
+    name: Publicar GitHub Pages y compilar APK
     runs-on: ubuntu-latest
+    environment:
+      name: github-pages
 
     steps:
       - name: Descargar repositorio
         uses: actions/checkout@v4
+
+      - name: Verificar aplicación web
+        shell: bash
+        run: |
+          if [ ! -f www/index.html ]; then
+            echo "ERROR: No existe www/index.html"
+            echo "Sube la aplicación real dentro de la carpeta www."
+            exit 1
+          fi
+
+      # Publica el contenido de www en la raíz de GitHub Pages.
+      - name: Configurar GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Preparar archivos de GitHub Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: www
+
+      - name: Publicar sitio web
+        id: deployment
+        uses: actions/deploy-pages@v4
 
       - name: Configurar Node.js 20
         uses: actions/setup-node@v4
@@ -33,17 +62,14 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      # Inicializa Capacitor desde cero en cada ejecución.
       - name: Inicializar Capacitor 6
         shell: bash
         run: |
           npm init -y
           npm install @capacitor/core@6 @capacitor/cli@6 @capacitor/android@6
 
-          mkdir -p www
-
-          if [ ! -f www/index.html ]; then
-            echo '<!doctype html><html lang="es"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><h1>VigiaStock Pro</h1></body></html>' > www/index.html
-          fi
+          rm -f capacitor.config.ts capacitor.config.js capacitor.config.mjs capacitor.config.json
 
           npx cap init "VigiaStock Pro" "com.vigiastock.pro" --web-dir=www
 
@@ -52,18 +78,18 @@ jobs:
           cat > capacitor.config.json <<'EOF'
           {
             "appId": "com.vigiastock.pro",
-                  "appName": "VigiaStock Pro",
-                "webDir": "www",
-              "server": {
-    "url": "https://anthonycarrasco203-lang.github.io/vigiastock-pro/",
-    "cleartext": true
+            "appName": "VigiaStock Pro",
+            "webDir": "www",
+            "server": {
+              "url": "https://anthonycarrasco203-lang.github.io/vigiastock-pro/",
+              "cleartext": true
             }
           }
           EOF
 
           npx cap add android
 
-      - name: Configurar permisos y MainActivity.java
+      - name: Inyectar permisos y generar MainActivity.java
         shell: bash
         run: |
           node <<'NODE'
@@ -114,11 +140,13 @@ jobs:
 
           import android.Manifest;
           import android.app.AlarmManager;
+          import android.app.AlertDialog;
           import android.app.NotificationChannel;
           import android.app.NotificationManager;
           import android.app.PendingIntent;
           import android.content.ContentValues;
           import android.content.Intent;
+          import android.content.SharedPreferences;
           import android.content.pm.PackageManager;
           import android.net.Uri;
           import android.os.Build;
@@ -143,8 +171,8 @@ jobs:
 
           import java.io.File;
           import java.io.FileOutputStream;
-          import java.io.OutputStream;
           import java.io.IOException;
+          import java.io.OutputStream;
           import java.util.concurrent.atomic.AtomicBoolean;
 
           public class MainActivity extends BridgeActivity {
@@ -153,6 +181,8 @@ jobs:
               private static final int NOTIFICATION_ID = 4102;
               private static final String CHANNEL_ID = "vigiastock_alertas";
               private static final String ALARM_ACTION = "com.vigiastock.pro.REOPEN_LOCK";
+              private static final String PREFS_NAME = "vigia_native_state";
+              private static final String PREF_LOCK_ACTIVE = "alarm_lock_active";
 
               private final Handler handler = new Handler(Looper.getMainLooper());
               private final AtomicBoolean alarmLockActive = new AtomicBoolean(false);
@@ -161,6 +191,8 @@ jobs:
               private Runnable vibrationRunnable;
               private AlarmManager alarmManager;
               private PendingIntent reopenPendingIntent;
+              private SharedPreferences preferences;
+              private boolean overlayDialogShown = false;
 
               @Override
               public void onCreate(Bundle savedInstanceState) {
@@ -168,6 +200,9 @@ jobs:
 
                   vibrator = (Vibrator) getSystemService(VIBRATOR_SERVICE);
                   alarmManager = (AlarmManager) getSystemService(ALARM_SERVICE);
+                  preferences = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+
+                  alarmLockActive.set(preferences.getBoolean(PREF_LOCK_ACTIVE, false));
 
                   createNotificationChannel();
                   registerAndroidBridge();
@@ -195,23 +230,84 @@ jobs:
                       );
                   }
 
-                  handler.postDelayed(() -> {
-                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
-                          !Settings.canDrawOverlays(this)) {
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
+                      !Settings.canDrawOverlays(this) &&
+                      !overlayDialogShown) {
 
-                          try {
-                              Intent overlayIntent = new Intent(
-                                  Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                                  Uri.parse("package:" + getPackageName())
-                              );
+                      overlayDialogShown = true;
 
-                              overlayIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                              startActivity(overlayIntent);
-
-                          } catch (Exception ignored) {
+                      handler.postDelayed(() -> {
+                          if (isFinishing() || Settings.canDrawOverlays(this)) {
+                              return;
                           }
-                      }
-                  }, 1200);
+
+                          new AlertDialog.Builder(this)
+                              .setTitle("Permiso necesario para VigiaStock Pro")
+                              .setMessage(
+                                  "Android ha bloqueado el permiso de superposición " +
+                                  "porque la aplicación se instaló mediante un APK.\n\n" +
+                                  "1. Pulsa 'Abrir información'.\n" +
+                                  "2. En la pantalla de información, abre el menú de tres puntos.\n" +
+                                  "3. Selecciona 'Permitir ajustes restringidos'.\n" +
+                                  "4. Regresa a VigiaStock Pro y pulsa 'Abrir permiso'.\n" +
+                                  "5. Activa 'Mostrar sobre otras aplicaciones'.\n\n" +
+                                  "Android exige que este cambio lo autorices manualmente."
+                              )
+                              .setPositiveButton("Abrir información", (dialog, which) -> {
+                                  try {
+                                      Intent intent = new Intent(
+                                          Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                          Uri.parse("package:" + getPackageName())
+                                      );
+                                      startActivity(intent);
+                                  } catch (Exception e) {
+                                      Toast.makeText(
+                                          this,
+                                          "No se pudieron abrir los ajustes de la aplicación",
+                                          Toast.LENGTH_LONG
+                                      ).show();
+                                  }
+                              })
+                              .setNeutralButton("Abrir permiso", (dialog, which) -> {
+                                  openOverlaySettings();
+                              })
+                              .setNegativeButton("Más tarde", null)
+                              .show();
+
+                      }, 1200);
+                  }
+              }
+
+              private void openOverlaySettings() {
+                  if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M ||
+                      Settings.canDrawOverlays(this)) {
+                      return;
+                  }
+
+                  try {
+                      Intent intent = new Intent(
+                          Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                          Uri.parse("package:" + getPackageName())
+                      );
+                      startActivity(intent);
+                  } catch (Exception e) {
+                      Toast.makeText(
+                          this,
+                          "Android no permitió abrir el ajuste. Actívalo manualmente desde Acceso especial.",
+                          Toast.LENGTH_LONG
+                      ).show();
+                  }
+              }
+
+              @Override
+              public void onResume() {
+                  super.onResume();
+
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
+                      !Settings.canDrawOverlays(this)) {
+                      // No se fuerza ni se intenta eludir la protección de Android.
+                      // El usuario puede volver a abrir el permiso desde el aviso de la app.
+                  }
               }
 
               private void createNotificationChannel() {
@@ -285,7 +381,6 @@ jobs:
               private PendingIntent getReopenPendingIntent() {
                   Intent intent = new Intent(this, MainActivity.class);
                   intent.setAction(ALARM_ACTION);
-
                   intent.addFlags(
                       Intent.FLAG_ACTIVITY_NEW_TASK |
                       Intent.FLAG_ACTIVITY_CLEAR_TOP |
@@ -293,7 +388,6 @@ jobs:
                   );
 
                   int flags = PendingIntent.FLAG_UPDATE_CURRENT;
-
                   if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                       flags |= PendingIntent.FLAG_IMMUTABLE;
                   }
@@ -308,7 +402,6 @@ jobs:
 
                   try {
                       reopenPendingIntent = getReopenPendingIntent();
-
                       long triggerAt = System.currentTimeMillis() + 5000L;
 
                       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
@@ -324,17 +417,14 @@ jobs:
                               reopenPendingIntent
                           );
                       }
-
                   } catch (SecurityException exception) {
                       try {
                           PendingIntent pendingIntent = getReopenPendingIntent();
-
                           alarmManager.setAndAllowWhileIdle(
                               AlarmManager.RTC_WAKEUP,
                               System.currentTimeMillis() + 5000L,
                               pendingIntent
                           );
-
                       } catch (Exception ignored) {
                       }
                   } catch (Exception ignored) {
@@ -354,7 +444,6 @@ jobs:
                       alarmManager.cancel(reopenPendingIntent);
                       reopenPendingIntent.cancel();
                       reopenPendingIntent = null;
-
                   } catch (Exception ignored) {
                   }
               }
@@ -400,7 +489,6 @@ jobs:
                       if (Build.VERSION.SDK_INT < 33 ||
                           checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
                               == PackageManager.PERMISSION_GRANTED) {
-
                           NotificationManagerCompat.from(this)
                               .notify(NOTIFICATION_ID, builder.build());
                       }
@@ -428,7 +516,6 @@ jobs:
 
                           if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                               ContentValues values = new ContentValues();
-
                               values.put(MediaStore.Downloads.DISPLAY_NAME, savedFileName);
                               values.put(
                                   MediaStore.Downloads.MIME_TYPE,
@@ -462,9 +549,7 @@ jobs:
 
                               ContentValues completed = new ContentValues();
                               completed.put(MediaStore.Downloads.IS_PENDING, 0);
-
                               getContentResolver().update(uri, completed, null, null);
-
                           } else {
                               File downloads =
                                   Environment.getExternalStoragePublicDirectory(
@@ -476,7 +561,6 @@ jobs:
                               }
 
                               File file = new File(downloads, savedFileName);
-
                               outputStream = new FileOutputStream(file);
                               outputStream.write(data);
                               outputStream.flush();
@@ -520,15 +604,22 @@ jobs:
 
                   @JavascriptInterface
                   public void requestAllPermissions() {
-                      runOnUiThread(() ->
-                          MainActivity.this.requestAllPermissions()
-                      );
+                      runOnUiThread(() -> {
+                          overlayDialogShown = false;
+                          MainActivity.this.requestAllPermissions();
+                      });
+                  }
+
+                  @JavascriptInterface
+                  public void openOverlaySettings() {
+                      runOnUiThread(() -> MainActivity.this.openOverlaySettings());
                   }
 
                   @JavascriptInterface
                   public void setAlarmLock(boolean active) {
                       runOnUiThread(() -> {
                           alarmLockActive.set(active);
+                          preferences.edit().putBoolean(PREF_LOCK_ACTIVE, active).apply();
 
                           if (active) {
                               startContinuousVibration();
@@ -562,10 +653,13 @@ jobs:
           }
           `;
 
-          fs.writeFileSync(javaPath, javaSource.replace(/^          /gm, ''));
+          fs.writeFileSync(
+            javaPath,
+            javaSource.replace(/^          /gm, '')
+          );
 
           console.log('MainActivity.java generado correctamente.');
-          console.log('Permisos Android configurados correctamente.');
+          console.log('Permisos Android inyectados correctamente.');
           NODE
 
       - name: Sincronizar Capacitor
@@ -579,7 +673,7 @@ jobs:
         shell: bash
         run: ./gradlew assembleDebug --no-daemon
 
-      - name: Publicar APK
+      - name: Publicar APK VigiaStock Pro
         uses: actions/upload-artifact@v4
         with:
           name: VigiaStock-Pro-APK
