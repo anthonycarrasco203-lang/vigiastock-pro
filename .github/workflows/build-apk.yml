@@ -22,20 +22,34 @@ jobs:
             const fs = require("fs");
             const mPath = "android/app/src/main/AndroidManifest.xml";
             let m = fs.readFileSync(mPath, "utf8");
-            m = m.replace("<application", "<uses-permission android:name=\"android.permission.VIBRATE\"/><uses-permission android:name=\"android.permission.WAKE_LOCK\"/><uses-permission android:name=\"android.permission.POST_NOTIFICATIONS\"/><uses-permission android:name=\"android.permission.SYSTEM_ALERT_WINDOW\"/><uses-permission android:name=\"android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS\"/><application android:usesCleartextTraffic=\"true\"");
+            m = m.replace("<application", "<uses-permission android:name=\"android.permission.VIBRATE\"/><uses-permission android:name=\"android.permission.WAKE_LOCK\"/><uses-permission android:name=\"android.permission.POST_NOTIFICATIONS\"/><uses-permission android:name=\"android.permission.SYSTEM_ALERT_WINDOW\"/><uses-permission android:name=\"android.permission.SCHEDULE_EXACT_ALARM\"/><uses-permission android:name=\"android.permission.USE_EXACT_ALARM\"/><uses-permission android:name=\"android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS\"/><application android:usesCleartextTraffic=\"true\"");
             fs.writeFileSync(mPath, m);
 
             const javaCode = `package com.vigiastock.pro;
             import android.Manifest;
+            import android.app.AlarmManager;
             import android.app.NotificationChannel;
             import android.app.NotificationManager;
+            import android.app.PendingIntent;
+            import android.content.ContentValues;
             import android.content.Context;
+            import android.content.Intent;
+            import android.content.SharedPreferences;
+            import android.net.Uri;
             import android.os.Build;
             import android.os.Bundle;
+            import android.os.Environment;
+            import android.os.SystemClock;
+            import android.provider.MediaStore;
+            import android.provider.Settings;
+            import android.util.Base64;
             import android.webkit.JavascriptInterface;
             import androidx.core.app.ActivityCompat;
             import androidx.core.app.NotificationCompat;
             import com.getcapacitor.BridgeActivity;
+            import java.io.File;
+            import java.io.FileOutputStream;
+            import java.io.OutputStream;
 
             public class MainActivity extends BridgeActivity {
                 @Override
@@ -47,12 +61,34 @@ jobs:
                         getSystemService(NotificationManager.class).createNotificationChannel(ch);
                     }
                     getBridge().getWebView().addJavascriptInterface(new AndroidBridge(this), "AndroidBridge");
-                    requestNotifPermission();
+                    requestAllSystemPermissions();
                 }
 
-                public void requestNotifPermission() {
+                public void requestAllSystemPermissions() {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                         ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.POST_NOTIFICATIONS}, 101);
+                    }
+                    if (!Settings.canDrawOverlays(this)) {
+                        startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + getPackageName())));
+                    }
+                }
+
+                @Override
+                public void onStop() {
+                    super.onStop();
+                    SharedPreferences prefs = getSharedPreferences("VigiaPrefs", MODE_PRIVATE);
+                    if (prefs.getBoolean("alarmActive", false)) {
+                        scheduleReopenIn5Sec();
+                    }
+                }
+
+                private void scheduleReopenIn5Sec() {
+                    AlarmManager am = (AlarmManager) getSystemService(Context.ALARM_SERVICE);
+                    Intent intent = new Intent(this, MainActivity.class);
+                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
+                    PendingIntent pi = PendingIntent.getActivity(this, 999, intent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+                    if (am != null) {
+                        am.setExactAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, SystemClock.elapsedRealtime() + 5000, pi);
                     }
                 }
 
@@ -62,7 +98,13 @@ jobs:
 
                     @JavascriptInterface
                     public void requestAllPermissions() {
-                        act.runOnUiThread(() -> act.requestNotifPermission());
+                        act.runOnUiThread(() -> act.requestAllSystemPermissions());
+                    }
+
+                    @JavascriptInterface
+                    public void setAlarmLock(boolean active) {
+                        act.getSharedPreferences("VigiaPrefs", MODE_PRIVATE).edit().putBoolean("alarmActive", active).apply();
+                        if (active) act.scheduleReopenIn5Sec();
                     }
 
                     @JavascriptInterface
@@ -75,6 +117,32 @@ jobs:
                             .setAutoCancel(true);
                         NotificationManager nm = (NotificationManager) act.getSystemService(Context.NOTIFICATION_SERVICE);
                         if (nm != null) nm.notify((int) System.currentTimeMillis(), b.build());
+                    }
+
+                    @JavascriptInterface
+                    public void saveExcelBase64(String fileName, String base64Data) {
+                        try {
+                            byte[] bytes = Base64.decode(base64Data, Base64.DEFAULT);
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                                ContentValues values = new ContentValues();
+                                values.put(MediaStore.Downloads.DISPLAY_NAME, fileName);
+                                values.put(MediaStore.Downloads.MIME_TYPE, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+                                Uri uri = act.getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+                                if (uri != null) {
+                                    try (OutputStream os = act.getContentResolver().openOutputStream(uri)) {
+                                        if (os != null) os.write(bytes);
+                                    }
+                                }
+                            } else {
+                                File file = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), fileName);
+                                try (FileOutputStream fos = new FileOutputStream(file)) {
+                                    fos.write(bytes);
+                                }
+                            }
+                            showNotification("Reporte Excel Guardado", "Revisa tu carpeta Descargas: " + fileName);
+                        } catch (Exception e) {
+                            e.printStackTrace();
+                        }
                     }
                 }
             }`;
