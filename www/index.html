@@ -154,7 +154,7 @@ function Icon({name}){const paths={home:<><path d="m3 10 9-7 9 7"/><path d="M5 9
 function App(){
  const [db,setDb]=useState(null),[state,setState]=useState(null),[dbError,setDbError]=useState(''),[user,setUser]=useState(null),[tab,setTab]=useState('home'),[login,setLogin]=useState({username:'',password:''}),[toast,setToast]=useState(''),[manual,setManual]=useState({code:'',quantity:'1',expiry:'',location:'Percha',section:'sec24'}),[importBusy,setImportBusy]=useState(false),[filter,setFilter]=useState('all'),[search,setSearch]=useState(''),[employeeForm,setEmployeeForm]=useState(null),[sectionForm,setSectionForm]=useState(''),[messageForm,setMessageForm]=useState({to:'',text:''}),[reportFilter,setReportFilter]=useState('all'),[physical,setPhysical]=useState({}),[alarmTick,setAlarmTick]=useState(Date.now()),[permissionStatus,setPermissionStatus]=useState(()=>VigiaBridge.native?{native:true,overlay:false,battery:false}:null),[permissionBusy,setPermissionBusy]=useState(false);
  const notify=m=>{setToast(m);setTimeout(()=>setToast(''),3000)};
- useEffect(()=>{(async()=>{try{const d=await openDB();setDb(d);let s=await dbGet(d);if(!s){s=initialState();await dbPut(d,s);}setState(s);}catch(e){setDbError('No se pudo iniciar el almacenamiento local: '+e.message);}})();},[]);
+ useEffect(()=>{(async()=>{try{const d=await openDB();setDb(d);let s=await dbGet(d);if(!s){s=initialState();await dbPut(d,s);}else{s.users=Array.isArray(s.users)?s.users:SEED_USERS;s.sections=Array.isArray(s.sections)?s.sections:SEED_SECTIONS;s.products=Array.isArray(s.products)?s.products:[];s.audit=Array.isArray(s.audit)?s.audit:[];s.messages=Array.isArray(s.messages)?s.messages:[];s.mandatoryAlerts=Array.isArray(s.mandatoryAlerts)?s.mandatoryAlerts:[];s.imports=Array.isArray(s.imports)?s.imports:[];}setState(s);}catch(e){setDbError('No se pudo iniciar el almacenamiento local: '+e.message);}})();},[]);
  useEffect(()=>{if(!db||!state)return;dbPut(db,state).then(()=>{try{localStorage.setItem('vigiaStockPro:lastSaved',new Date().toISOString());localStorage.setItem('vigiaStockPro:dbVersion','1');}catch(e){}}).catch(e=>setDbError(e.message));},[db,state]);
  const currentUser=state&&user?state.users.find(u=>u.id===user.id):null;
  const isAdmin=currentUser?.role==='admin'; 
@@ -175,8 +175,58 @@ function App(){
  useEffect(()=>{document.body.classList.toggle('lock-scroll',operatorLocked);if(!operatorLocked&&currentUser&&!isAdmin)localStorage.removeItem('vigiaStockPro:alarmStart:'+currentUser.id);return()=>document.body.classList.remove('lock-scroll')},[operatorLocked,currentUser?.id,isAdmin]);
  const log=(action,detail,actor=currentUser)=>({id:uid(),at:new Date().toISOString(),userId:actor?.id||'system',username:actor?.username||'sistema',action,detail});
  const update=(fn)=>setState(prev=>{const next=structuredClone(prev);fn(next);return next;});
- function loginAs(u,p){const found=state.users.find(x=>x.username===u&&x.password===p&&x.active);if(!found){notify('Usuario o contraseña incorrectos.');return;}setUser({id:found.id});setTab('home');}
- async function doLogin(e){e.preventDefault();try{if(window.AndroidPermisos?.solicitarTodos)window.AndroidPermisos.solicitarTodos();if('Notification'in window&&Notification.permission==='default')await Notification.requestPermission();const AC=window.AudioContext||window.webkitAudioContext;if(AC){const c=new AC();await c.resume();c.close();}if(navigator.wakeLock?.request){const w=await navigator.wakeLock.request('screen');await w.release();}navigator.vibrate?.(80);}catch(err){}loginAs(login.username.trim(),login.password);}
+ function loginAs(u,p){
+  const username=String(u??'').trim().toLocaleLowerCase('es');
+  const password=String(p??'').trim();
+  const users=Array.isArray(state?.users)?state.users:[];
+  const found=users.find(x=>
+   String(x.username??'').trim().toLocaleLowerCase('es')===username &&
+   String(x.password??'').trim()===password &&
+   x.active===true
+  );
+  if(!found){notify('Usuario o contraseña incorrectos. Verifica los datos y que la cuenta esté activa.');return;}
+  setUser({id:found.id});
+  setLogin({username:'',password:''});
+  setTab('home');
+ }
+ function saveEmployee(form){
+  const username=String(form.username??'').trim().toLocaleLowerCase('es');
+  const password=String(form.password??'').trim();
+  const name=String(form.name??'').trim();
+  if(!name||!username||!password){notify('Completa el nombre, usuario y contraseña.');return;}
+  if(!Array.isArray(form.sections)||form.sections.length===0){notify('Asigna al menos una sección al empleado.');return;}
+  const duplicate=(state.users||[]).some(u=>
+   String(u.username??'').trim().toLocaleLowerCase('es')===username && u.id!==form.id
+  );
+  if(duplicate){notify('Ese nombre de usuario ya está registrado.');return;}
+  if(form.id&&!state.users.some(u=>u.id===form.id)){notify('No se encontró el empleado que intentas editar.');return;}
+  const cleanForm={...form,name,username,password,active:form.active===true,sections:[...form.sections]};
+  update(s=>{
+   if(form.id){
+    const index=s.users.findIndex(u=>u.id===form.id);
+    if(index<0)return;
+    s.users[index]={...s.users[index],...cleanForm};
+    s.audit.unshift(log('Empleado actualizado',name));
+   }else{
+    s.users.push({...cleanForm,id:uid()});
+    s.audit.unshift(log('Empleado creado',name));
+   }
+  });
+  setEmployeeForm(null);
+  notify('Datos del empleado guardados correctamente.');
+ }
+ async function doLogin(e){
+  e.preventDefault();
+  try{
+   if(window.AndroidPermisos?.solicitarTodos)window.AndroidPermisos.solicitarTodos();
+   if('Notification'in window&&Notification.permission==='default')await Notification.requestPermission();
+   const AC=window.AudioContext||window.webkitAudioContext;
+   if(AC){const c=new AC();await c.resume();c.close();}
+   if(navigator.wakeLock?.request){const w=await navigator.wakeLock.request('screen');await w.release();}
+   navigator.vibrate?.(80);
+  }catch(err){}
+  loginAs(login.username,login.password);
+ }
  function actionProduct(product,action,discount=0){update(s=>{const p=s.products.find(x=>x.id===product.id);if(!p)return;p.managedAt=new Date().toISOString();p.managedBy=currentUser.id;p.action=action;p.discount=discount;p.removed=action==='retired';s.audit.unshift(log(action,`${p.name} · ${p.code} · ${sectionName(s,p.sectionId)}${discount?' · '+discount+'%':''}`));if(!isAdmin){s.mandatoryAlerts.filter(a=>a.userId===currentUser.id&&!a.resolved).forEach(a=>{a.resolved=true;a.resolvedAt=new Date().toISOString();a.resolvedBy=currentUser.id;s.audit.unshift(log('Alerta obligatoria atendida',`Atendida mediante acción sobre ${p.code}`));});}});notify('Acción registrada en auditoría.');}
  function completePhysical(product,action,discount=0){
   const f=physical[product.id]||{};
@@ -284,7 +334,7 @@ function App(){
  </main>
  <nav className="fixed bottom-0 inset-x-0 z-30 border-t border-zinc-800 bg-[#111113]/95 backdrop-blur bottom-nav"><div className="max-w-app mx-auto grid grid-cols-5 px-1 pt-2">{nav.map(([id,label,icon])=><button key={id} onClick={()=>setTab(id)} className={`flex flex-col items-center gap-1 py-2 text-[10px] ${tab===id?'text-white':'text-zinc-500'}`}><span className={tab===id?'text-accent':''}><Icon name={icon}/></span>{label}</button>)}</div></nav>
  {operatorLocked&&<div className="fixed inset-0 z-[100] bg-black text-white overflow-y-auto overscroll-contain"><div className="max-w-app mx-auto min-h-screen px-4 py-6 flex flex-col justify-center"><div className="border-2 border-accent rounded-2xl p-5 bg-[#160909] text-center"><div className="text-xs uppercase tracking-[.2em] text-red-300 font-bold">Modo alarma continua</div><h1 className="text-2xl font-black mt-2 text-accent">GESTIÓN OBLIGATORIA</h1><p className="text-sm text-zinc-300 mt-2">No puedes continuar hasta completar la validación física del producto.</p><div className="text-4xl font-black tabular-nums mt-4">{String(Math.floor(alarmElapsed/60)).padStart(2,'0')}:{String(alarmElapsed%60).padStart(2,'0')}</div><p className="text-[10px] text-zinc-500 mt-1">TIEMPO TRANSCURRIDO</p></div>{lockItems.map((item,i)=>{const product=item.type==='product'?item.product:(item.alert.productId?myProducts.find(p=>p.id===item.alert.productId):myProducts.find(p=>!p.removed&&!p.managedAt)||myProducts.find(p=>!p.removed));if(!product)return <div key={item.alert.id} className="card border-red-900 p-4 mt-3"><b className="text-red-400">ALERTA DEL SUPERVISOR</b><p className="text-sm mt-2">{item.alert.text}</p><p className="text-xs text-zinc-400 mt-2">No hay productos asociados. Contacta al Supervisor para asignar un producto que requiera gestión física.</p></div>;const f=physical[product.id]||{};return <div key={item.type==='product'?product.id:item.alert.id} className="card border-red-900 p-4 mt-3"><div className="text-xs text-red-400 font-bold">{item.type==='product'?'PRODUCTO CRÍTICO · ACCIÓN INMEDIATA':'ALERTA DEL SUPERVISOR'}</div><div className="font-bold mt-1">{product.name}</div><div className="text-xs text-zinc-400 mt-1">{product.code} · {sectionName(state,product.sectionId)}</div><div className="text-sm text-red-300 mt-2">{item.type==='product'?statusOf(product).label:item.alert.text}</div><div className="mt-4 space-y-3"><label className="block text-sm text-zinc-300">1. Últimos 4 dígitos del código EAN<input className="field mt-1 text-center tracking-[.35em]" type="password" inputMode="numeric" maxLength="4" placeholder="••••" value={f.ean4||''} onChange={e=>setPhysical(v=>({...v,[product.id]:{...f,ean4:e.target.value.replace(/\D/g,'').slice(0,4)}}))}/></label><p className="text-[10px] text-zinc-500">La verificación del código físico y la acción quedarán registradas en auditoría.</p><div className="grid grid-cols-2 gap-2"><button className="btn btn-primary" onClick={()=>completePhysical(product,'discount',30)}>Aplicar rebaja -30%</button><button className="btn btn-primary" onClick={()=>completePhysical(product,'discount',50)}>Aplicar rebaja -50%</button><button className="btn btn-secondary col-span-2" onClick={()=>completePhysical(product,'retired')}>Confirmar Retiro</button></div></div></div>})}</div></div>}
- {employeeForm&&<EmployeeModal form={employeeForm} setForm={setEmployeeForm} state={state} onSave={form=>{update(s=>{if(form.id){const i=s.users.findIndex(u=>u.id===form.id);s.users[i]={...s.users[i],...form};s.audit.unshift(log('Empleado actualizado',form.name));}else{s.users.push({...form,id:uid()});s.audit.unshift(log('Empleado creado',form.name));}});setEmployeeForm(null);notify('Datos del empleado guardados.');}}/>}
+ {employeeForm&&<EmployeeModal form={employeeForm} setForm={setEmployeeForm} state={state} onSave={saveEmployee}/>}
  {toast&&<Toast text={toast}/>}
  </div>;
 }
