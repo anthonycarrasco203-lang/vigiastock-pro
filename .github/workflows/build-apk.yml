@@ -33,7 +33,7 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Inicializar proyecto Capacitor 6
+      - name: Inicializar Capacitor 6
         shell: bash
         run: |
           npm init -y
@@ -63,7 +63,7 @@ jobs:
 
           npx cap add android
 
-      - name: Inyectar permisos Android y generar MainActivity.java
+      - name: Configurar permisos y MainActivity.java
         shell: bash
         run: |
           node <<'NODE'
@@ -218,14 +218,11 @@ jobs:
                   if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                       NotificationChannel channel = new NotificationChannel(
                           CHANNEL_ID,
-                          "Alertas de VigíaStock Pro",
+                          "Alertas de VigiaStock Pro",
                           NotificationManager.IMPORTANCE_HIGH
                       );
 
-                      channel.setDescription(
-                          "Alertas operativas obligatorias de inventario"
-                      );
-
+                      channel.setDescription("Alertas operativas obligatorias de inventario");
                       channel.enableVibration(true);
                       channel.setVibrationPattern(new long[]{0, 700, 250, 700});
 
@@ -363,7 +360,7 @@ jobs:
               }
 
               @Override
-              protected void onStart() {
+              public void onStart() {
                   super.onStart();
 
                   if (alarmLockActive.get()) {
@@ -373,7 +370,7 @@ jobs:
               }
 
               @Override
-              protected void onStop() {
+              public void onStop() {
                   if (alarmLockActive.get()) {
                       scheduleReopenAlarm();
                   }
@@ -382,7 +379,7 @@ jobs:
               }
 
               @Override
-              protected void onDestroy() {
+              public void onDestroy() {
                   stopContinuousVibration();
                   super.onDestroy();
               }
@@ -390,16 +387,10 @@ jobs:
               private void showNativeNotification(String title, String body) {
                   NotificationCompat.Builder builder =
                       new NotificationCompat.Builder(this, CHANNEL_ID)
-                          .setSmallIcon(
-                              getApplicationInfo().icon != 0
-                                  ? getApplicationInfo().icon
-                                  : android.R.drawable.ic_dialog_alert
-                          )
+                          .setSmallIcon(android.R.drawable.ic_dialog_alert)
                           .setContentTitle(title)
                           .setContentText(body)
-                          .setStyle(
-                              new NotificationCompat.BigTextStyle().bigText(body)
-                          )
+                          .setStyle(new NotificationCompat.BigTextStyle().bigText(body))
                           .setPriority(NotificationCompat.PRIORITY_MAX)
                           .setCategory(NotificationCompat.CATEGORY_ALARM)
                           .setAutoCancel(true)
@@ -438,21 +429,15 @@ jobs:
                           if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                               ContentValues values = new ContentValues();
 
-                              values.put(
-                                  MediaStore.Downloads.DISPLAY_NAME,
-                                  savedFileName
-                              );
-
+                              values.put(MediaStore.Downloads.DISPLAY_NAME, savedFileName);
                               values.put(
                                   MediaStore.Downloads.MIME_TYPE,
                                   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                               );
-
                               values.put(
                                   MediaStore.Downloads.RELATIVE_PATH,
                                   Environment.DIRECTORY_DOWNLOADS
                               );
-
                               values.put(MediaStore.Downloads.IS_PENDING, 1);
 
                               Uri uri = getContentResolver().insert(
@@ -461,18 +446,13 @@ jobs:
                               );
 
                               if (uri == null) {
-                                  throw new IOException(
-                                      "No se pudo crear el archivo en Descargas"
-                                  );
+                                  throw new IOException("No se pudo crear el archivo en Descargas");
                               }
 
-                              outputStream = getContentResolver()
-                                  .openOutputStream(uri);
+                              outputStream = getContentResolver().openOutputStream(uri);
 
                               if (outputStream == null) {
-                                  throw new IOException(
-                                      "No se pudo abrir el archivo"
-                                  );
+                                  throw new IOException("No se pudo abrir el archivo");
                               }
 
                               outputStream.write(data);
@@ -481,17 +461,9 @@ jobs:
                               outputStream = null;
 
                               ContentValues completed = new ContentValues();
-                              completed.put(
-                                  MediaStore.Downloads.IS_PENDING,
-                                  0
-                              );
+                              completed.put(MediaStore.Downloads.IS_PENDING, 0);
 
-                              getContentResolver().update(
-                                  uri,
-                                  completed,
-                                  null,
-                                  null
-                              );
+                              getContentResolver().update(uri, completed, null, null);
 
                           } else {
                               File downloads =
@@ -500,9 +472,7 @@ jobs:
                                   );
 
                               if (!downloads.exists() && !downloads.mkdirs()) {
-                                  throw new IOException(
-                                      "No se pudo crear la carpeta Descargas"
-                                  );
+                                  throw new IOException("No se pudo crear la carpeta Descargas");
                               }
 
                               File file = new File(downloads, savedFileName);
@@ -522,9 +492,8 @@ jobs:
                               ).show();
 
                               showNativeNotification(
-                                  "VigíaStock Pro",
-                                  "El archivo " + savedFileName +
-                                  " se guardó en Descargas."
+                                  "VigiaStock Pro",
+                                  "El archivo " + savedFileName + " se guardó en Descargas."
                               );
                           });
 
@@ -539,8 +508,7 @@ jobs:
                           runOnUiThread(() ->
                               Toast.makeText(
                                   this,
-                                  "Error al guardar Excel: " +
-                                  exception.getMessage(),
+                                  "Error al guardar Excel: " + exception.getMessage(),
                                   Toast.LENGTH_LONG
                               ).show()
                           );
@@ -576,17 +544,14 @@ jobs:
                   public void showNotification(String title, String body) {
                       runOnUiThread(() ->
                           showNativeNotification(
-                              title == null ? "VigíaStock Pro" : title,
+                              title == null ? "VigiaStock Pro" : title,
                               body == null ? "" : body
                           )
                       );
                   }
 
                   @JavascriptInterface
-                  public void saveExcelBase64(
-                      String fileName,
-                      String base64Data
-                  ) {
+                  public void saveExcelBase64(String fileName, String base64Data) {
                       if (base64Data == null || base64Data.isEmpty()) {
                           return;
                       }
@@ -597,13 +562,10 @@ jobs:
           }
           `;
 
-          fs.writeFileSync(
-            javaPath,
-            javaSource.replace(/^          /gm, '')
-          );
+          fs.writeFileSync(javaPath, javaSource.replace(/^          /gm, ''));
 
           console.log('MainActivity.java generado correctamente.');
-          console.log('Permisos Android inyectados correctamente.');
+          console.log('Permisos Android configurados correctamente.');
           NODE
 
       - name: Sincronizar Capacitor
@@ -615,10 +577,9 @@ jobs:
       - name: Compilar APK Debug
         working-directory: android
         shell: bash
-        run: |
-          ./gradlew assembleDebug --no-daemon
+        run: ./gradlew assembleDebug --no-daemon
 
-      - name: Publicar artefacto VigíaStock Pro
+      - name: Publicar APK
         uses: actions/upload-artifact@v4
         with:
           name: VigiaStock-Pro-APK
