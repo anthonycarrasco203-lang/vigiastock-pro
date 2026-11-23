@@ -18,7 +18,68 @@ jobs:
           npm install @capacitor/core@6 @capacitor/cli@6 @capacitor/android@6
           npx cap init "VigiaStock Pro" "com.vigiastock.pro" --web-dir=www
           npx cap add android
-          node -e 'const fs=require("fs");const p="android/app/src/main/AndroidManifest.xml";let m=fs.readFileSync(p,"utf8");m=m.replace("<application","<uses-permission android:name=\"android.permission.VIBRATE\"/><uses-permission android:name=\"android.permission.WAKE_LOCK\"/><uses-permission android:name=\"android.permission.POST_NOTIFICATIONS\"/><uses-permission android:name=\"android.permission.SYSTEM_ALERT_WINDOW\"/><uses-permission android:name=\"android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS\"/><application android:usesCleartextTraffic=\"true\"");fs.writeFileSync(p,m);'
+          node -e '
+            const fs = require("fs");
+            const mPath = "android/app/src/main/AndroidManifest.xml";
+            let m = fs.readFileSync(mPath, "utf8");
+            m = m.replace("<application", "<uses-permission android:name=\"android.permission.VIBRATE\"/><uses-permission android:name=\"android.permission.WAKE_LOCK\"/><uses-permission android:name=\"android.permission.POST_NOTIFICATIONS\"/><uses-permission android:name=\"android.permission.SYSTEM_ALERT_WINDOW\"/><uses-permission android:name=\"android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS\"/><application android:usesCleartextTraffic=\"true\"");
+            fs.writeFileSync(mPath, m);
+
+            const javaCode = `package com.vigiastock.pro;
+            import android.Manifest;
+            import android.app.NotificationChannel;
+            import android.app.NotificationManager;
+            import android.content.Context;
+            import android.os.Build;
+            import android.os.Bundle;
+            import android.webkit.JavascriptInterface;
+            import androidx.core.app.ActivityCompat;
+            import androidx.core.app.NotificationCompat;
+            import com.getcapacitor.BridgeActivity;
+
+            public class MainActivity extends BridgeActivity {
+                @Override
+                public void onCreate(Bundle savedInstanceState) {
+                    super.onCreate(savedInstanceState);
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        NotificationChannel ch = new NotificationChannel("vigiastock_alerts", "Alertas Criticas", NotificationManager.IMPORTANCE_HIGH);
+                        ch.enableVibration(true);
+                        getSystemService(NotificationManager.class).createNotificationChannel(ch);
+                    }
+                    getBridge().getWebView().addJavascriptInterface(new AndroidBridge(this), "AndroidBridge");
+                    requestNotifPermission();
+                }
+
+                public void requestNotifPermission() {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.POST_NOTIFICATIONS}, 101);
+                    }
+                }
+
+                public class AndroidBridge {
+                    MainActivity act;
+                    AndroidBridge(MainActivity a) { this.act = a; }
+
+                    @JavascriptInterface
+                    public void requestAllPermissions() {
+                        act.runOnUiThread(() -> act.requestNotifPermission());
+                    }
+
+                    @JavascriptInterface
+                    public void showNotification(String title, String body) {
+                        NotificationCompat.Builder b = new NotificationCompat.Builder(act, "vigiastock_alerts")
+                            .setSmallIcon(android.R.drawable.ic_dialog_alert)
+                            .setContentTitle(title)
+                            .setContentText(body)
+                            .setPriority(NotificationCompat.PRIORITY_MAX)
+                            .setAutoCancel(true);
+                        NotificationManager nm = (NotificationManager) act.getSystemService(Context.NOTIFICATION_SERVICE);
+                        if (nm != null) nm.notify((int) System.currentTimeMillis(), b.build());
+                    }
+                }
+            }`;
+            fs.writeFileSync("android/app/src/main/java/com/vigiastock/pro/MainActivity.java", javaCode);
+          '
           npx cap sync android
           cd android && chmod +x gradlew && ./gradlew assembleDebug
       - uses: actions/upload-artifact@v4
