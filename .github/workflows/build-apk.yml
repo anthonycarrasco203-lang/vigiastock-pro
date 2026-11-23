@@ -1,156 +1,562 @@
-name: Compilar APK VigiaStock Pro
-on: [push]
+
+name: Build VigiaStock Pro APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "www/**"
+      - ".github/workflows/build-apk.yml"
+
+permissions:
+  contents: read
+
 jobs:
   build:
+    name: Build Android APK
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Descargar repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js 20
+        uses: actions/setup-node@v4
         with:
-          node-version: 20
-      - uses: actions/setup-java@v4
+          node-version: "20"
+          cache: npm
+
+      - name: Configurar Java 17
+        uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
-          java-version: '17'
-      - name: Construir proyecto Android y APK
+          distribution: temurin
+          java-version: "17"
+
+      - name: Inicializar proyecto Capacitor 6
+        shell: bash
         run: |
           npm init -y
           npm install @capacitor/core@6 @capacitor/cli@6 @capacitor/android@6
+
+          mkdir -p www
+          if [ ! -f www/index.html ]; then
+            echo '<!doctype html><html lang="es"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><h1>VigiaStock Pro</h1></body></html>' > www/index.html
+          fi
+
           npx cap init "VigiaStock Pro" "com.vigiastock.pro" --web-dir=www
+
+          rm -f capacitor.config.ts capacitor.config.js capacitor.config.mjs
+
+          cat > capacitor.config.json <<'EOF'
+          {
+            "appId": "com.vigiastock.pro",
+            "appName": "VigiaStock Pro",
+            "webDir": "www",
+            "server": {
+              "url": "https://anthonycarrasco203-lang.github.io/vigiastock-pro/www/",
+              "cleartext": true
+            }
+          }
+          EOF
+
           npx cap add android
-          node -e '
-            const fs = require("fs");
-            const mPath = "android/app/src/main/AndroidManifest.xml";
-            let m = fs.readFileSync(mPath, "utf8");
-            m = m.replace("<application", "<uses-permission android:name=\"android.permission.VIBRATE\"/><uses-permission android:name=\"android.permission.WAKE_LOCK\"/><uses-permission android:name=\"android.permission.POST_NOTIFICATIONS\"/><uses-permission android:name=\"android.permission.SYSTEM_ALERT_WINDOW\"/><uses-permission android:name=\"android.permission.SCHEDULE_EXACT_ALARM\"/><uses-permission android:name=\"android.permission.USE_EXACT_ALARM\"/><uses-permission android:name=\"android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS\"/><application android:usesCleartextTraffic=\"true\"");
-            fs.writeFileSync(mPath, m);
 
-            const javaCode = `package com.vigiastock.pro;
-            import android.Manifest;
-            import android.app.AlarmManager;
-            import android.app.NotificationChannel;
-            import android.app.NotificationManager;
-            import android.app.PendingIntent;
-            import android.content.ContentValues;
-            import android.content.Context;
-            import android.content.Intent;
-            import android.content.SharedPreferences;
-            import android.net.Uri;
-            import android.os.Build;
-            import android.os.Bundle;
-            import android.os.Environment;
-            import android.os.SystemClock;
-            import android.provider.MediaStore;
-            import android.provider.Settings;
-            import android.util.Base64;
-            import android.webkit.JavascriptInterface;
-            import androidx.core.app.ActivityCompat;
-            import androidx.core.app.NotificationCompat;
-            import com.getcapacitor.BridgeActivity;
-            import java.io.File;
-            import java.io.FileOutputStream;
-            import java.io.OutputStream;
+      - name: Inyectar permisos Android y generar MainActivity.java
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
 
-            public class MainActivity extends BridgeActivity {
-                @Override
-                public void onCreate(Bundle savedInstanceState) {
-                    super.onCreate(savedInstanceState);
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                        NotificationChannel ch = new NotificationChannel("vigiastock_alerts", "Alertas Criticas", NotificationManager.IMPORTANCE_HIGH);
-                        ch.enableVibration(true);
-                        getSystemService(NotificationManager.class).createNotificationChannel(ch);
-                    }
-                    getBridge().getWebView().addJavascriptInterface(new AndroidBridge(this), "AndroidBridge");
-                    requestAllSystemPermissions();
-                }
+          const manifestPath = 'android/app/src/main/AndroidManifest.xml';
+          let manifest = fs.readFileSync(manifestPath, 'utf8');
 
-                public void requestAllSystemPermissions() {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                        ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.POST_NOTIFICATIONS}, 101);
-                    }
-                    if (!Settings.canDrawOverlays(this)) {
-                        startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + getPackageName())));
-                    }
-                }
+          const permissions = [
+            'android.permission.VIBRATE',
+            'android.permission.WAKE_LOCK',
+            'android.permission.POST_NOTIFICATIONS',
+            'android.permission.SYSTEM_ALERT_WINDOW',
+            'android.permission.SCHEDULE_EXACT_ALARM',
+            'android.permission.USE_EXACT_ALARM',
+            'android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS',
+            'android.permission.WRITE_EXTERNAL_STORAGE'
+          ];
 
-                @Override
-                public void onStop() {
-                    super.onStop();
-                    SharedPreferences prefs = getSharedPreferences("VigiaPrefs", MODE_PRIVATE);
-                    if (prefs.getBoolean("alarmActive", false)) {
-                        scheduleReopenIn5Sec();
-                    }
-                }
+          for (const permission of permissions) {
+            const tag = `<uses-permission android:name="${permission}" />`;
+            if (!manifest.includes(`android:name="${permission}"`)) {
+              manifest = manifest.replace(
+                /<manifest\b[^>]*>/,
+                match => `${match}\n    ${tag}`
+              );
+            }
+          }
 
-                private void scheduleReopenIn5Sec() {
-                    AlarmManager am = (AlarmManager) getSystemService(Context.ALARM_SERVICE);
-                    Intent intent = new Intent(this, MainActivity.class);
-                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
-                    PendingIntent pi = PendingIntent.getActivity(this, 999, intent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-                    if (am != null) {
-                        am.setExactAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, SystemClock.elapsedRealtime() + 5000, pi);
-                    }
-                }
+          if (!/android:usesCleartextTraffic=/.test(manifest)) {
+            manifest = manifest.replace(
+              /<application\b/,
+              '<application android:usesCleartextTraffic="true"'
+            );
+          } else {
+            manifest = manifest.replace(
+              /android:usesCleartextTraffic="[^"]*"/,
+              'android:usesCleartextTraffic="true"'
+            );
+          }
 
-                public class AndroidBridge {
-                    MainActivity act;
-                    AndroidBridge(MainActivity a) { this.act = a; }
+          fs.writeFileSync(manifestPath, manifest);
 
-                    @JavascriptInterface
-                    public void requestAllPermissions() {
-                        act.runOnUiThread(() -> act.requestAllSystemPermissions());
-                    }
+          const javaPath = 'android/app/src/main/java/com/vigiastock/pro/MainActivity.java';
+          fs.mkdirSync(path.dirname(javaPath), { recursive: true });
 
-                    @JavascriptInterface
-                    public void setAlarmLock(boolean active) {
-                        act.getSharedPreferences("VigiaPrefs", MODE_PRIVATE).edit().putBoolean("alarmActive", active).apply();
-                        if (active) act.scheduleReopenIn5Sec();
-                    }
+          const javaSource = String.raw`package com.vigiastock.pro;
 
-                    @JavascriptInterface
-                    public void showNotification(String title, String body) {
-                        NotificationCompat.Builder b = new NotificationCompat.Builder(act, "vigiastock_alerts")
-                            .setSmallIcon(android.R.drawable.ic_dialog_alert)
-                            .setContentTitle(title)
-                            .setContentText(body)
-                            .setPriority(NotificationCompat.PRIORITY_MAX)
-                            .setAutoCancel(true);
-                        NotificationManager nm = (NotificationManager) act.getSystemService(Context.NOTIFICATION_SERVICE);
-                        if (nm != null) nm.notify((int) System.currentTimeMillis(), b.build());
-                    }
+          import android.Manifest;
+          import android.app.Activity;
+          import android.app.AlarmManager;
+          import android.app.NotificationChannel;
+          import android.app.NotificationManager;
+          import android.app.PendingIntent;
+          import android.content.ContentValues;
+          import android.content.Intent;
+          import android.content.pm.PackageManager;
+          import android.net.Uri;
+          import android.os.Build;
+          import android.os.Bundle;
+          import android.os.Environment;
+          import android.os.Handler;
+          import android.os.Looper;
+          import android.os.VibrationEffect;
+          import android.os.Vibrator;
+          import android.provider.MediaStore;
+          import android.provider.Settings;
+          import android.util.Base64;
+          import android.webkit.JavascriptInterface;
+          import android.webkit.WebView;
+          import android.widget.Toast;
 
-                    @JavascriptInterface
-                    public void saveExcelBase64(String fileName, String base64Data) {
-                        try {
-                            byte[] bytes = Base64.decode(base64Data, Base64.DEFAULT);
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                                ContentValues values = new ContentValues();
-                                values.put(MediaStore.Downloads.DISPLAY_NAME, fileName);
-                                values.put(MediaStore.Downloads.MIME_TYPE, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-                                Uri uri = act.getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
-                                if (uri != null) {
-                                    try (OutputStream os = act.getContentResolver().openOutputStream(uri)) {
-                                        if (os != null) os.write(bytes);
-                                    }
-                                }
-                            } else {
-                                File file = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), fileName);
-                                try (FileOutputStream fos = new FileOutputStream(file)) {
-                                    fos.write(bytes);
-                                }
-                            }
-                            showNotification("Reporte Excel Guardado", "Revisa tu carpeta Descargas: " + fileName);
-                        } catch (Exception e) {
-                            e.printStackTrace();
-                        }
-                    }
-                }
-            }`;
-            fs.writeFileSync("android/app/src/main/java/com/vigiastock/pro/MainActivity.java", javaCode);
-          '
+          import androidx.core.app.ActivityCompat;
+          import androidx.core.app.NotificationCompat;
+          import androidx.core.app.NotificationManagerCompat;
+
+          import com.getcapacitor.BridgeActivity;
+
+          import java.io.File;
+          import java.io.FileOutputStream;
+          import java.io.OutputStream;
+          import java.io.IOException;
+          import java.util.concurrent.atomic.AtomicBoolean;
+
+          public class MainActivity extends BridgeActivity {
+
+              private static final int REQUEST_NOTIFICATIONS = 4101;
+              private static final int NOTIFICATION_ID = 4102;
+              private static final String CHANNEL_ID = "vigiastock_alertas";
+              private static final String ALARM_ACTION = "com.vigiastock.pro.REOPEN_LOCK";
+
+              private final Handler handler = new Handler(Looper.getMainLooper());
+              private final AtomicBoolean alarmLockActive = new AtomicBoolean(false);
+
+              private Vibrator vibrator;
+              private Runnable vibrationRunnable;
+              private AlarmManager alarmManager;
+              private PendingIntent reopenPendingIntent;
+
+              @Override
+              public void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+
+                  vibrator = (Vibrator) getSystemService(VIBRATOR_SERVICE);
+                  alarmManager = (AlarmManager) getSystemService(ALARM_SERVICE);
+
+                  createNotificationChannel();
+                  registerAndroidBridge();
+                  requestAllPermissions();
+              }
+
+              private void registerAndroidBridge() {
+                  if (getBridge() == null || getBridge().getWebView() == null) {
+                      return;
+                  }
+
+                  WebView webView = getBridge().getWebView();
+                  webView.addJavascriptInterface(new AndroidBridge(), "AndroidBridge");
+              }
+
+              private void requestAllPermissions() {
+                  if (Build.VERSION.SDK_INT >= 33 &&
+                      checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                          != PackageManager.PERMISSION_GRANTED) {
+
+                      ActivityCompat.requestPermissions(
+                          this,
+                          new String[]{Manifest.permission.POST_NOTIFICATIONS},
+                          REQUEST_NOTIFICATIONS
+                      );
+                  }
+
+                  handler.postDelayed(() -> {
+                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
+                          !Settings.canDrawOverlays(this)) {
+
+                          try {
+                              Intent overlayIntent = new Intent(
+                                  Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                  Uri.parse("package:" + getPackageName())
+                              );
+                              overlayIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                              startActivity(overlayIntent);
+                          } catch (Exception ignored) {
+                          }
+                      }
+                  }, 1200);
+              }
+
+              private void createNotificationChannel() {
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                      NotificationChannel channel = new NotificationChannel(
+                          CHANNEL_ID,
+                          "Alertas de VigíaStock Pro",
+                          NotificationManager.IMPORTANCE_HIGH
+                      );
+
+                      channel.setDescription("Alertas operativas obligatorias de inventario");
+                      channel.enableVibration(true);
+                      channel.setVibrationPattern(new long[]{0, 700, 250, 700});
+
+                      NotificationManager manager =
+                          (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+
+                      if (manager != null) {
+                          manager.createNotificationChannel(channel);
+                      }
+                  }
+              }
+
+              private void startContinuousVibration() {
+                  stopContinuousVibration();
+
+                  vibrationRunnable = new Runnable() {
+                      @Override
+                      public void run() {
+                          if (!alarmLockActive.get()) {
+                              return;
+                          }
+
+                          try {
+                              if (vibrator != null && vibrator.hasVibrator()) {
+                                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                      vibrator.vibrate(
+                                          VibrationEffect.createOneShot(
+                                              850,
+                                              VibrationEffect.DEFAULT_AMPLITUDE
+                                          )
+                                      );
+                                  } else {
+                                      vibrator.vibrate(850);
+                                  }
+                              }
+                          } catch (Exception ignored) {
+                          }
+
+                          handler.postDelayed(this, 1000);
+                      }
+                  };
+
+                  handler.post(vibrationRunnable);
+              }
+
+              private void stopContinuousVibration() {
+                  if (vibrationRunnable != null) {
+                      handler.removeCallbacks(vibrationRunnable);
+                      vibrationRunnable = null;
+                  }
+
+                  if (vibrator != null) {
+                      try {
+                          vibrator.cancel();
+                      } catch (Exception ignored) {
+                      }
+                  }
+              }
+
+              private PendingIntent getReopenPendingIntent() {
+                  Intent intent = new Intent(this, MainActivity.class);
+                  intent.setAction(ALARM_ACTION);
+                  intent.addFlags(
+                      Intent.FLAG_ACTIVITY_NEW_TASK |
+                      Intent.FLAG_ACTIVITY_CLEAR_TOP |
+                      Intent.FLAG_ACTIVITY_SINGLE_TOP
+                  );
+
+                  int flags = PendingIntent.FLAG_UPDATE_CURRENT;
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                      flags |= PendingIntent.FLAG_IMMUTABLE;
+                  }
+
+                  return PendingIntent.getActivity(this, 4103, intent, flags);
+              }
+
+              private void scheduleReopenAlarm() {
+                  if (!alarmLockActive.get() || alarmManager == null) {
+                      return;
+                  }
+
+                  try {
+                      reopenPendingIntent = getReopenPendingIntent();
+                      long triggerAt = System.currentTimeMillis() + 5000L;
+
+                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                          alarmManager.setExactAndAllowWhileIdle(
+                              AlarmManager.RTC_WAKEUP,
+                              triggerAt,
+                              reopenPendingIntent
+                          );
+                      } else {
+                          alarmManager.setExact(
+                              AlarmManager.RTC_WAKEUP,
+                              triggerAt,
+                              reopenPendingIntent
+                          );
+                      }
+                  } catch (SecurityException exception) {
+                      try {
+                          PendingIntent pendingIntent = getReopenPendingIntent();
+                          alarmManager.setAndAllowWhileIdle(
+                              AlarmManager.RTC_WAKEUP,
+                              System.currentTimeMillis() + 5000L,
+                              pendingIntent
+                          );
+                      } catch (Exception ignored) {
+                      }
+                  } catch (Exception ignored) {
+                  }
+              }
+
+              private void cancelReopenAlarm() {
+                  if (alarmManager == null) {
+                      return;
+                  }
+
+                  try {
+                      if (reopenPendingIntent == null) {
+                          reopenPendingIntent = getReopenPendingIntent();
+                      }
+
+                      alarmManager.cancel(reopenPendingIntent);
+                      reopenPendingIntent.cancel();
+                      reopenPendingIntent = null;
+                  } catch (Exception ignored) {
+                  }
+              }
+
+              @Override
+              protected void onStart() {
+                  super.onStart();
+
+                  if (alarmLockActive.get()) {
+                      cancelReopenAlarm();
+                      startContinuousVibration();
+                  }
+              }
+
+              @Override
+              protected void onStop() {
+                  if (alarmLockActive.get()) {
+                      scheduleReopenAlarm();
+                  }
+
+                  super.onStop();
+              }
+
+              @Override
+              protected void onDestroy() {
+                  stopContinuousVibration();
+                  super.onDestroy();
+              }
+
+              private void showNativeNotification(String title, String body) {
+                  NotificationCompat.Builder builder =
+                      new NotificationCompat.Builder(this, CHANNEL_ID)
+                          .setSmallIcon(getApplicationInfo().icon)
+                          .setContentTitle(title)
+                          .setContentText(body)
+                          .setStyle(new NotificationCompat.BigTextStyle().bigText(body))
+                          .setPriority(NotificationCompat.PRIORITY_MAX)
+                          .setCategory(NotificationCompat.CATEGORY_ALARM)
+                          .setAutoCancel(true)
+                          .setVibrate(new long[]{0, 700, 250, 700});
+
+                  try {
+                      if (Build.VERSION.SDK_INT < 33 ||
+                          checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                              == PackageManager.PERMISSION_GRANTED) {
+                          NotificationManagerCompat.from(this)
+                              .notify(NOTIFICATION_ID, builder.build());
+                      }
+                  } catch (SecurityException ignored) {
+                  }
+              }
+
+              private void saveExcel(String fileName, String base64Data) {
+                  new Thread(() -> {
+                      OutputStream outputStream = null;
+                      try {
+                          String safeName = fileName == null ? "VigiaStock.xlsx" : fileName;
+                          safeName = safeName.replaceAll("[\\\\/:*?\"<>|]", "_");
+
+                          if (!safeName.toLowerCase().endsWith(".xlsx")) {
+                              safeName += ".xlsx";
+                          }
+
+                          byte[] data = Base64.decode(base64Data, Base64.DEFAULT);
+
+                          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                              ContentValues values = new ContentValues();
+                              values.put(MediaStore.Downloads.DISPLAY_NAME, safeName);
+                              values.put(
+                                  MediaStore.Downloads.MIME_TYPE,
+                                  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                              );
+                              values.put(
+                                  MediaStore.Downloads.RELATIVE_PATH,
+                                  Environment.DIRECTORY_DOWNLOADS
+                              );
+                              values.put(MediaStore.Downloads.IS_PENDING, 1);
+
+                              Uri uri = getContentResolver().insert(
+                                  MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                                  values
+                              );
+
+                              if (uri == null) {
+                                  throw new IOException("No se pudo crear el archivo en Descargas");
+                              }
+
+                              outputStream = getContentResolver().openOutputStream(uri);
+                              if (outputStream == null) {
+                                  throw new IOException("No se pudo abrir el archivo");
+                              }
+
+                              outputStream.write(data);
+                              outputStream.flush();
+                              outputStream.close();
+                              outputStream = null;
+
+                              ContentValues completed = new ContentValues();
+                              completed.put(MediaStore.Downloads.IS_PENDING, 0);
+                              getContentResolver().update(uri, completed, null, null);
+
+                          } else {
+                              File downloads = Environment.getExternalStoragePublicDirectory(
+                                  Environment.DIRECTORY_DOWNLOADS
+                              );
+
+                              if (!downloads.exists() && !downloads.mkdirs()) {
+                                  throw new IOException("No se pudo crear la carpeta Descargas");
+                              }
+
+                              File file = new File(downloads, safeName);
+                              outputStream = new FileOutputStream(file);
+                              outputStream.write(data);
+                              outputStream.flush();
+                              outputStream.close();
+                              outputStream = null;
+                          }
+
+                          runOnUiThread(() -> {
+                              Toast.makeText(
+                                  this,
+                                  "Excel guardado en Descargas",
+                                  Toast.LENGTH_LONG
+                              ).show();
+                              showNativeNotification(
+                                  "VigíaStock Pro",
+                                  "El archivo " + safeName + " se guardó en Descargas."
+                              );
+                          });
+
+                      } catch (Exception exception) {
+                          if (outputStream != null) {
+                              try {
+                                  outputStream.close();
+                              } catch (IOException ignored) {
+                              }
+                          }
+
+                          runOnUiThread(() ->
+                              Toast.makeText(
+                                  this,
+                                  "Error al guardar Excel: " + exception.getMessage(),
+                                  Toast.LENGTH_LONG
+                              ).show()
+                          );
+                      }
+                  }).start();
+              }
+
+              public class AndroidBridge {
+
+                  @JavascriptInterface
+                  public void requestAllPermissions() {
+                      runOnUiThread(() -> MainActivity.this.requestAllPermissions());
+                  }
+
+                  @JavascriptInterface
+                  public void setAlarmLock(boolean active) {
+                      runOnUiThread(() -> {
+                          alarmLockActive.set(active);
+
+                          if (active) {
+                              startContinuousVibration();
+                              scheduleReopenAlarm();
+                          } else {
+                              stopContinuousVibration();
+                              cancelReopenAlarm();
+                          }
+                      });
+                  }
+
+                  @JavascriptInterface
+                  public void showNotification(String title, String body) {
+                      runOnUiThread(() -> showNativeNotification(
+                          title == null ? "VigíaStock Pro" : title,
+                          body == null ? "" : body
+                      ));
+                  }
+
+                  @JavascriptInterface
+                  public void saveExcelBase64(String fileName, String base64Data) {
+                      if (base64Data == null || base64Data.isEmpty()) {
+                          return;
+                      }
+
+                      saveExcel(fileName, base64Data);
+                  }
+              }
+          }
+          `;
+
+          fs.writeFileSync(javaPath, javaSource.replace(/^          /gm, ''));
+          NODE
+
+      - name: Sincronizar Capacitor
+        shell: bash
+        run: |
           npx cap sync android
-          cd android && chmod +x gradlew && ./gradlew assembleDebug
-      - uses: actions/upload-artifact@v4
+          chmod +x android/gradlew
+
+      - name: Compilar APK Debug
+        working-directory: android
+        shell: bash
+        run: ./gradlew assembleDebug --no-daemon
+
+      - name: Publicar artefacto VigiaStock Pro
+        uses: actions/upload-artifact@v4
         with:
           name: VigiaStock-Pro-APK
           path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 30
