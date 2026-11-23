@@ -17,22 +17,9 @@ jobs:
         run: |
           npm init -y
           npm install @capacitor/core@6 @capacitor/cli@6 @capacitor/android@6
-          npx cap init "VigíaStock Pro" "com.vigiastock.pro" --web-dir=www
+          npx cap init "VigiaStock Pro" "com.vigiastock.pro" --web-dir=www
           npx cap add android
-          node -e '
-            const fs = require("fs");
-            const mPath = "android/app/src/main/AndroidManifest.xml";
-            let m = fs.readFileSync(mPath, "utf8");
-            const perms = [
-              "android.permission.VIBRATE",
-              "android.permission.WAKE_LOCK",
-              "android.permission.POST_NOTIFICATIONS",
-              "android.permission.SYSTEM_ALERT_WINDOW",
-              "android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"
-            ].map(p => `<uses-permission android:name="${p}" />`).join("\n    ");
-            m = m.replace("<application", perms + "\n    <application android:usesCleartextTraffic=\"true\"");
-            fs.writeFileSync(mPath, m);
-          '
+          node -e 'const fs=require("fs");const p="android/app/src/main/AndroidManifest.xml";let m=fs.readFileSync(p,"utf8");m=m.replace("<application","<uses-permission android:name=\"android.permission.VIBRATE\"/><uses-permission android:name=\"android.permission.WAKE_LOCK\"/><uses-permission android:name=\"android.permission.POST_NOTIFICATIONS\"/><uses-permission android:name=\"android.permission.SYSTEM_ALERT_WINDOW\"/><uses-permission android:name=\"android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS\"/><application android:usesCleartextTraffic=\"true\"");fs.writeFileSync(p,m);'
           npx cap sync android
           cd android && chmod +x gradlew && ./gradlew assembleDebug
       - uses: actions/upload-artifact@v4
